@@ -1,0 +1,80 @@
+# yamllint disable rule:line-length
+---
+name: EOD Screener → Auto PR (KOSPI/KOSDAQ)
+
+'on':
+  # 수동 실행 버튼도 제공
+  workflow_dispatch:
+
+  # 한국 장마감 16:00 KST 기준 + 약간의 여유
+  # GitHub cron은 UTC이므로 16:10 KST = 07:10 UTC
+  schedule:
+    - cron: "10 7 * * 1-5"
+
+permissions:
+  contents: write        # 커밋/브랜치 푸시
+  pull-requests: write   # PR 생성
+
+env:
+  PYTHONUNBUFFERED: "1"
+  TZ: Asia/Seoul
+
+jobs:
+  run-screener-and-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # (선택) 결과/차트 저장 폴더가 .gitignore로 무시되지 않도록 확인
+      - name: Ensure output dir exists
+        run: |
+          mkdir -p output/charts
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+
+      # 스크리너 실행 (필요 시 경로/옵션 조정)
+      - name: Run KRX EOD screener (Top10 + conservative + charts + news)
+        run: |
+          python krx_ai_screener.py --top 10 --conservative --plots --news 3 --output picks_eod_top10.csv
+
+      # 변경사항 커밋 (CSV/차트 포함)
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b auto/eod-screener || git checkout auto/eod-screener
+          git add -A
+          # 변경이 없으면 커밋을 만들지 않음
+          git diff --cached --quiet || git commit -m "chore: EOD screener results ($(date +'%Y-%m-%d %H:%M %Z'))"
+
+      - name: Push branch
+        run: |
+          git push --set-upstream origin auto/eod-screener || git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # PR 생성/갱신
+      - name: Create or Update Pull Request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: auto/eod-screener
+          base: main
+          title: "EOD Screener: Top10 (자동)"
+          body: |
+            - 자동 생성된 PR입니다.
+            - 장마감 기준 Top10 (보수 모드), 뉴스/차트 포함
+            - CSV: `output/picks_eod_top10.csv`
+            - 차트: `output/charts/*`
+          commit-message: "chore: EOD screener results (auto)"
+          delete-branch: false
